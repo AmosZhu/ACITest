@@ -17,8 +17,11 @@
 #include <sstream>
 #include <string.h>
 #include "ACICommon.h"
+#include "ACIException.hpp"
 
 #define BUFLENGTH (1024)
+
+ACIClient* ACIClient::m_hInstatnce=nullptr;
 
 ACIClient::ACIClient() {
 	m_errno = 0;
@@ -40,7 +43,7 @@ ACIClient::~ACIClient() {
 
 bool ACIClient::Initalize() {
 	if ((m_fdSock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-		m_errno = errno;
+		throw ACIException(strerror(errno));
 		return false;
 	}
 
@@ -55,15 +58,14 @@ bool ACIClient::Connect(char* _ipAddr, int _port) {
 	servaddr.sin_family = AF_INET;
 	servaddr.sin_port = htons(_port);
 	if (inet_pton(AF_INET, _ipAddr, &servaddr.sin_addr) <= 0) {
-		m_errno = errno;
+		throw ACIException(strerror(errno));
 		return false;
 	}
 
 	if (connect(m_fdSock, (struct sockaddr*) &servaddr, sizeof(servaddr)) < 0) {
-		m_errno = errno;
+		throw ACIException(strerror(errno));
 		return false;
 	}
-
 	return res;
 }
 
@@ -86,7 +88,7 @@ bool ACIClient::Send(const aci_msg_body& _msg, int _numOfBytes) {
 	memcpy(&sendMsg.message, &_msg, wtemp);
 
 	if (send(m_fdSock, (void*) &sendMsg, sizeof(sendMsg), 0) < 0) {
-		m_errno = errno;
+		throw ACIException(strerror(errno));
 		return false;
 	}
 
@@ -97,24 +99,17 @@ bool ACIClient::Send(const aci_msg_body& _msg, int _numOfBytes) {
 bool ACIClient::Read(aci_msg_body& _msg) {
 	unsigned char buff[BUFLENGTH];
 	int len;
-	if ((len=recv(m_fdSock, buff, BUFLENGTH, 0)) < 0) {
-		m_errno = errno;
+	if ((len = recv(m_fdSock, buff, BUFLENGTH, 0)) < 0) {
+		throw ACIException(strerror(errno));
 		return false;
 	}
 
-	return SplitMessage(buff, nullptr, &_msg,len);
+	return SplitMessage(buff, nullptr, &_msg, len);
 
-}
-
-std::string ACIClient::Error() {
-	std::ostringstream stringStream;
-	stringStream << strerror(errno);
-	std::string errorInfo = stringStream.str();
-	return errorInfo;
 }
 
 bool ACIClient::SplitMessage(unsigned char* _buf, aci_msg_header* _header,
-		aci_msg_body* _body,int _len) {
+		aci_msg_body* _body, int _len) {
 	if (_buf == nullptr)
 		return false;
 
@@ -127,6 +122,15 @@ bool ACIClient::SplitMessage(unsigned char* _buf, aci_msg_header* _header,
 	return true;
 }
 
+ ACIClient* ACIClient::GetInstance(void)
+ {
+	 if(m_hInstatnce==nullptr)
+	 {
+		 m_hInstatnce=new ACIClient;
+	 }
+	 return m_hInstatnce;
+ }
+
 aci_msg_t ACIClient::GetMessageType(const aci_msg_body& _msg) {
 	aci_msg_t msgType;
 
@@ -138,53 +142,105 @@ aci_msg_t ACIClient::GetMessageType(const aci_msg_body& _msg) {
 	case MESSAGE_BCODE: {
 		msgType = MESSAGE_B;
 	}
-		break;
+	break;
 	case MESSAGE_MCODE: {
 		msgType = MESSAGE_M;
 	}
-		break;
+	break;
 	case MESSAGE_QCODE: {
 		msgType = MESSAGE_Q;
 	}
-		break;
+	break;
 	case MESSAGE_SCODE: {
 		msgType = MESSAGE_S;
 	}
-		break;
+	break;
 	default: {
 		msgType = MESSAGE_UNKNOWN;
 	}
-		break;
+	break;
 	}
 	return msgType;
 }
 
 std::string ACIClient::MsgInterpret(aci_msg_body& _msg) {
-	std::string res;
 	std::ostringstream stringStream;
+	q_MSG qmsg;
+	s_MSG smsg;
+	b_MSG bmsg;
+	m_MSG mmsg;
 
 	switch (MS2LS(_msg.Msg_Type)) {
 	case MESSAGE_BCODE: {
-		res = "b\t";
+		stringStream << "b\t";
+		memcpy(&bmsg, _msg.Parameters, sizeof(b_MSG));
+		stringStream << "0x" << std::hex << MS2LS(bmsg.index) << '\t';
+		stringStream << "0x" << std::hex << (ACU16) bmsg.trpstr << '\t';
+		stringStream << "0x" << std::hex << (ACU16) bmsg.status << '\t';
+		stringStream << "0x" << std::hex << (ACU16) bmsg.parno << '\t';
+		stringStream << "0x" << std::hex << (ACU16) bmsg.spare << '\t';
+		stringStream << "0x" << std::hex << MS2LS(bmsg.ikey) << '\t';
 	}
-		break;
+	break;
 	case MESSAGE_MCODE: {
-		res = "m\t";
+		stringStream << "m\t";
+		memcpy(&mmsg, _msg.Parameters, sizeof(m_MSG));
 	}
-		break;
+	break;
 	case MESSAGE_QCODE: {
-		res = "q\t";
+		stringStream << "q\t";
+		memcpy(&qmsg, _msg.Parameters, sizeof(q_MSG));
 	}
-		break;
+	break;
 	case MESSAGE_SCODE: {
-		res = "s\t";
-	}
+		stringStream << "s\t";
+		memcpy(&smsg, _msg.Parameters, sizeof(s_MSG));
+		stringStream <<"Order No:"<< "0x" << std::hex << MS2LS(smsg.index) << '\t';
+		//res+=(stringStream.str()+'\t');
+
+		switch (smsg.orderstatus) {
+		case ACIS_OS_NOTUSED: {
+			stringStream << "Not used\t";
+		}
 		break;
+		case ACIS_OS_PENDING: {
+			stringStream << "Pending\t";
+		}
+		break;
+		case ACIS_OS_TRANSITORY: {
+			stringStream << "Transitory\t";
+		}
+		break;
+		case ACIS_OS_TRANSITORY2: {
+			stringStream << "Transitory2\t";
+		}
+		break;
+		case ACIS_OS_WAITVEHICLE: {
+			stringStream << "Waiting vehicle\t";
+		}
+		break;
+		case ACIS_OS_TRANSITORY3: {
+			stringStream << "Transitory3\t";
+		}
+		break;
+		case ACIS_OS_MOVEVEHICLE: {
+			stringStream << "Moving vehicle\t";
+		}
+		break;
+		default: {
+			stringStream << "unknown order status\t";
+		}
+		break;
+		}
+		stringStream <<"magic:"<< "0x" << MS2LS(smsg.magic) << '\t';
+		stringStream <<"car dest:"<< "0x" << MS2LS(smsg.carstn) << '\t';
+	}
+	break;
 	default: {
-		res = "?\t";
+		stringStream << "?\t";
 	}
-		break;
+	break;
 	}
 
-	return res;
+	return stringStream.str();
 }
